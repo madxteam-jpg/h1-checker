@@ -29,14 +29,52 @@ def calculate_similarity(text1: str, text2: str) -> float:
     return SequenceMatcher(None, text1.lower(), text2.lower()).ratio()
 
 def fetch_html_with_playwright(url: str) -> str:
-    """Renders the full JavaScript DOM using headless Chromium for JS-heavy pages."""
+    """Renders JS DOM while bypassing basic bot detection / Cloudflare challenges."""
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(user_agent=USER_AGENT)
+            # 1. Launch with flags that mask automation features
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-infobars",
+                    "--window-position=0,0",
+                    "--ignore-certificate-errors",
+                    "--disable-extensions",
+                ]
+            )
+
+            # 2. Emulate a real desktop browser context
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                viewport={"width": 1920, "height": 1080},
+                device_scale_factor=1,
+                is_mobile=False,
+                has_touch=False,
+                locale="en-US",
+                timezone_id="America/New_York"
+            )
+
             page = context.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=15000)
-            page.wait_for_timeout(2000)  # Wait for JS to render dynamic H1s
+
+            # 3. Mask navigator.webdriver in JavaScript context
+            page.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+            """)
+
+            # 4. Navigate and wait for anti-bot challenges to solve
+            page.goto(url, wait_until="domcontentloaded", timeout=25000)
+
+            # Check if landed on a challenge screen (e.g., Cloudflare Turnstile/Just a moment...)
+            page_title = page.title().lower()
+            if "just a moment" in page_title or "attention required" in page_title or "challenge" in page_title:
+                # Give Cloudflare JS challenge up to 6 seconds to complete automatically
+                page.wait_for_timeout(6000)
+
             html = page.content()
             browser.close()
             return html
@@ -224,7 +262,7 @@ if st.button("Run SEO Audit", type="primary"):
         results = []
         progress_bar = st.progress(0)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             futures = [executor.submit(analyze_url, url) for url in urls_to_check]
             for i, future in enumerate(concurrent.futures.as_completed(futures)):
                 results.append(future.result())
