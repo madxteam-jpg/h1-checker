@@ -9,6 +9,10 @@ import matplotlib.pyplot as plt
 import requests
 from bs4 import BeautifulSoup
 from difflib import SequenceMatcher
+import streamlit as st
+
+# --- STREAMLIT PAGE CONFIG (MUST BE AT THE VERY TOP) ---
+st.set_page_config(page_title="Bulk H1 SEO Checker", page_icon="🔍", layout="wide")
 
 # Auto-install Playwright Chromium binaries on deployment servers
 try:
@@ -224,8 +228,6 @@ def generate_report_card_image(df: pd.DataFrame) -> io.BytesIO:
     return buffer
 
 # --- Streamlit UI ---
-st.set_page_config(page_title="Bulk H1 SEO Checker", page_icon="🔍", layout="wide")
-
 st.title("🔍 Bulk H1 & SEO Context Checker")
 st.write("Audit your H1 tags for missing elements, duplicates, length optimization, and contextual alignment.")
 
@@ -255,7 +257,6 @@ if st.button("Run SEO Audit", type="primary"):
         results = []
         progress_bar = st.progress(0)
 
-        # Reduced max_workers to 2 to prevent triggering rate-limiters on bulk scans
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             futures = [executor.submit(analyze_url, url) for url in urls_to_check]
             for i, future in enumerate(concurrent.futures.as_completed(futures)):
