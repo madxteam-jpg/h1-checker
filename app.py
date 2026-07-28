@@ -80,7 +80,7 @@ def fetch_page_data_with_playwright(url: str) -> dict:
             if "just a moment" in page_title or "attention required" in page_title or "challenge" in page_title:
                 page.wait_for_timeout(7000)
 
-            # 4. Wait up to 5s for dynamic client-side JS / React hydration
+            # 4. Wait up to 4s for dynamic client-side JS / React hydration
             page.wait_for_timeout(4000)
 
             # 5. Native DOM Extraction (Queries live elements directly, including ARIA H1s)
@@ -112,7 +112,7 @@ def analyze_url(url: str) -> dict:
         url = "https://" + url
 
     result = {
-        "URL": url,
+        "URL": str(url),
         "Status": "Success",
         "H1 Count": 0,
         "H1 Content": "",
@@ -121,8 +121,10 @@ def analyze_url(url: str) -> dict:
         "H1 Length Optimal": False,
         "Relevance Score": 0.0,
         "SEO Grade": "Fail",
-        "Issues": []
+        "Issues": ""
     }
+
+    issues_list = []
 
     # Inter-request delay (2.0s - 3.5s) to avoid triggering IP velocity checks
     time.sleep(random.uniform(2.0, 3.5))
@@ -131,7 +133,7 @@ def analyze_url(url: str) -> dict:
 
     if not page_data["success"]:
         result["Status"] = "Failed to load page"
-        result["Issues"].append("Could not fetch page content (Timeout / Cloudflare Block)")
+        result["Issues"] = "Could not fetch page content (Timeout / Cloudflare Block)"
         return result
 
     h1_tags = page_data["h1_tags"]
@@ -143,12 +145,12 @@ def analyze_url(url: str) -> dict:
 
     if len(h1_tags) == 0:
         result["Is Missing H1"] = True
-        result["Issues"].append("Missing H1 tag")
+        issues_list.append("Missing H1 tag")
     elif len(h1_tags) > 1:
         result["Is Missing H1"] = False
         result["Has Multiple H1s"] = True
         result["H1 Content"] = " | ".join(h1_tags)
-        result["Issues"].append(f"Multiple H1 tags found ({len(h1_tags)})")
+        issues_list.append(f"Multiple H1 tags found ({len(h1_tags)})")
     else:
         result["Is Missing H1"] = False
         result["H1 Content"] = h1_tags[0]
@@ -161,9 +163,9 @@ def analyze_url(url: str) -> dict:
         if 20 <= h1_len <= 70:
             result["H1 Length Optimal"] = True
         elif h1_len < 20:
-            result["Issues"].append("H1 is too short (< 20 chars)")
+            issues_list.append("H1 is too short (< 20 chars)")
         else:
-            result["Issues"].append("H1 is too long (> 70 chars)")
+            issues_list.append("H1 is too long (> 70 chars)")
 
         title_sim = calculate_similarity(primary_h1, meta_title)
         context_sim = calculate_similarity(primary_h1, body_text[:500])
@@ -171,16 +173,16 @@ def analyze_url(url: str) -> dict:
         result["Relevance Score"] = round((title_sim + context_sim) / 2, 2)
 
         if title_sim < 0.2:
-            result["Issues"].append("Low correlation with page context")
+            issues_list.append("Low correlation with page context")
 
-    if not result["Issues"]:
+    if not issues_list:
         result["SEO Grade"] = "Pass (Optimized)"
     elif not result["Is Missing H1"] and not result["Has Multiple H1s"]:
         result["SEO Grade"] = "Needs Improvement"
     else:
         result["SEO Grade"] = "Critical SEO Error"
 
-    result["Issues"] = "; ".join(result["Issues"]) if result["Issues"] else "None"
+    result["Issues"] = "; ".join(issues_list) if issues_list else "None"
     return result
 
 def generate_report_card_image(df: pd.DataFrame) -> io.BytesIO:
@@ -257,6 +259,18 @@ if st.button("Run SEO Audit", type="primary"):
             progress_bar.progress((i + 1) / len(urls_to_check))
 
         df_results = pd.DataFrame(results)
+
+        # PyArrow Compatibility Fix: Enforce explicit column datatypes
+        df_results["URL"] = df_results["URL"].astype(str)
+        df_results["Status"] = df_results["Status"].astype(str)
+        df_results["H1 Count"] = pd.to_numeric(df_results["H1 Count"], errors="coerce").fillna(0).astype(int)
+        df_results["H1 Content"] = df_results["H1 Content"].astype(str)
+        df_results["Is Missing H1"] = df_results["Is Missing H1"].astype(bool)
+        df_results["Has Multiple H1s"] = df_results["Has Multiple H1s"].astype(bool)
+        df_results["H1 Length Optimal"] = df_results["H1 Length Optimal"].astype(bool)
+        df_results["Relevance Score"] = pd.to_numeric(df_results["Relevance Score"], errors="coerce").fillna(0.0).astype(float)
+        df_results["SEO Grade"] = df_results["SEO Grade"].astype(str)
+        df_results["Issues"] = df_results["Issues"].astype(str)
 
         st.success("Audit Completed!")
 
