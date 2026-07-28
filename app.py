@@ -1,14 +1,14 @@
-import streamlit as st
+import os
+import time
+import random
+import subprocess
+import io
+import concurrent.futures
+import pandas as pd
+import matplotlib.pyplot as plt
 import requests
 from bs4 import BeautifulSoup
-import pandas as pd
 from difflib import SequenceMatcher
-import concurrent.futures
-import io
-import matplotlib.pyplot as plt
-from playwright.sync_api import sync_playwright
-import os
-import subprocess
 
 # Auto-install Playwright Chromium binaries on deployment servers
 try:
@@ -17,22 +17,19 @@ except ImportError:
     subprocess.run(["pip", "install", "playwright"])
     from playwright.sync_api import sync_playwright
 
-# Ensure Chromium browser binary is installed on the host
 os.system("playwright install chromium")
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
 def calculate_similarity(text1: str, text2: str) -> float:
-    """Calculates string similarity ratio between two texts."""
     if not text1 or not text2:
         return 0.0
     return SequenceMatcher(None, text1.lower(), text2.lower()).ratio()
 
 def fetch_html_with_playwright(url: str) -> str:
-    """Renders JS DOM while bypassing basic bot detection / Cloudflare challenges."""
+    """Renders JS DOM while bypassing anti-bot challenges."""
     try:
         with sync_playwright() as p:
-            # 1. Launch with flags that mask automation features
             browser = p.chromium.launch(
                 headless=True,
                 args=[
@@ -46,9 +43,8 @@ def fetch_html_with_playwright(url: str) -> str:
                 ]
             )
 
-            # 2. Emulate a real desktop browser context
             context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                user_agent=USER_AGENT,
                 viewport={"width": 1920, "height": 1080},
                 device_scale_factor=1,
                 is_mobile=False,
@@ -59,20 +55,18 @@ def fetch_html_with_playwright(url: str) -> str:
 
             page = context.new_page()
 
-            # 3. Mask navigator.webdriver in JavaScript context
+            # Mask navigator.webdriver property
             page.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {
                     get: () => undefined
                 });
             """)
 
-            # 4. Navigate and wait for anti-bot challenges to solve
             page.goto(url, wait_until="domcontentloaded", timeout=25000)
 
-            # Check if landed on a challenge screen (e.g., Cloudflare Turnstile/Just a moment...)
+            # Cloudflare challenge wait logic
             page_title = page.title().lower()
             if "just a moment" in page_title or "attention required" in page_title or "challenge" in page_title:
-                # Give Cloudflare JS challenge up to 6 seconds to complete automatically
                 page.wait_for_timeout(6000)
 
             html = page.content()
@@ -82,7 +76,6 @@ def fetch_html_with_playwright(url: str) -> str:
         return ""
 
 def analyze_url(url: str) -> dict:
-    """Fetches a URL and performs H1, Title, Description, and SEO checks."""
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
@@ -110,10 +103,13 @@ def analyze_url(url: str) -> dict:
         "Accept-Language": "en-US,en;q=0.5",
     }
 
+    # Add random delay before starting to prevent burst rate-limiting
+    time.sleep(random.uniform(0.5, 1.5))
+
     html_content = ""
     try:
         response = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
-        if response.ok:
+        if response.ok and "just a moment" not in response.text.lower():
             html_content = response.text
     except Exception:
         pass
@@ -121,7 +117,7 @@ def analyze_url(url: str) -> dict:
     soup = BeautifulSoup(html_content, "html.parser") if html_content else None
     h1_tags = [h1.get_text(strip=True) for h1 in soup.find_all("h1")] if soup else []
 
-    # Fallback to Playwright if static scraping misses the H1 (e.g., React/Next.js pages)
+    # Fallback to Playwright if standard scrape failed or hit bot challenge
     if not h1_tags:
         rendered_html = fetch_html_with_playwright(url)
         if rendered_html:
@@ -130,7 +126,7 @@ def analyze_url(url: str) -> dict:
 
     if not soup:
         result["Status"] = "Failed to load page"
-        result["Issues"].append("Could not fetch page content")
+        result["Issues"].append("Could not fetch page content (Bot Protected / Offline)")
         return result
 
     # 1. Process H1 tags
@@ -193,9 +189,7 @@ def analyze_url(url: str) -> dict:
     result["Issues"] = "; ".join(result["Issues"]) if result["Issues"] else "None"
     return result
 
-
 def generate_report_card_image(df: pd.DataFrame) -> io.BytesIO:
-    """Generates an image summary report of the audit results."""
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.axis("off")
 
@@ -229,7 +223,6 @@ def generate_report_card_image(df: pd.DataFrame) -> io.BytesIO:
     plt.close(fig)
     return buffer
 
-
 # --- Streamlit UI ---
 st.set_page_config(page_title="Bulk H1 SEO Checker", page_icon="🔍", layout="wide")
 
@@ -262,6 +255,7 @@ if st.button("Run SEO Audit", type="primary"):
         results = []
         progress_bar = st.progress(0)
 
+        # Reduced max_workers to 2 to prevent triggering rate-limiters on bulk scans
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             futures = [executor.submit(analyze_url, url) for url in urls_to_check]
             for i, future in enumerate(concurrent.futures.as_completed(futures)):
@@ -272,18 +266,15 @@ if st.button("Run SEO Audit", type="primary"):
 
         st.success("Audit Completed!")
 
-        # Metrics display
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Total URLs Scanned", len(df_results))
         col2.metric("Missing H1", len(df_results[df_results["Is Missing H1"] == True]))
         col3.metric("Multiple H1s", len(df_results[df_results["Has Multiple H1s"] == True]))
         col4.metric("SEO Passed", len(df_results[df_results["SEO Grade"] == "Pass (Optimized)"]))
 
-        # Results Table
         st.subheader("Detailed Audit Results")
         st.dataframe(df_results, use_container_width=True)
 
-        # Downloads
         st.subheader("📥 Export Options")
         d_col1, d_col2 = st.columns(2)
 
