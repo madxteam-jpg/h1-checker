@@ -1,9 +1,7 @@
 import os
 import time
 import random
-import subprocess
 import io
-import concurrent.futures
 import pandas as pd
 import matplotlib.pyplot as plt
 import requests
@@ -14,25 +12,21 @@ import streamlit as st
 # --- STREAMLIT PAGE CONFIG (MUST BE AT THE VERY TOP) ---
 st.set_page_config(page_title="Bulk H1 SEO Checker", page_icon="🔍", layout="wide")
 
-# Auto-install Playwright Chromium binaries on deployment servers
-try:
-    from playwright.sync_api import sync_playwright
-except ImportError:
-    subprocess.run(["pip", "install", "playwright"])
-    from playwright.sync_api import sync_playwright
-
+# Install Playwright browser binary on host automatically
 os.system("playwright install chromium")
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
 def calculate_similarity(text1: str, text2: str) -> float:
+    """Calculates similarity ratio between two string texts."""
     if not text1 or not text2:
         return 0.0
     return SequenceMatcher(None, text1.lower(), text2.lower()).ratio()
 
 def fetch_html_with_playwright(url: str) -> str:
-    """Renders JS DOM while bypassing anti-bot challenges."""
+    """Renders JS DOM while bypassing basic anti-bot challenges cleanly per-request."""
     try:
+        from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=True,
@@ -41,8 +35,6 @@ def fetch_html_with_playwright(url: str) -> str:
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
                     "--disable-infobars",
-                    "--window-position=0,0",
-                    "--ignore-certificate-errors",
                     "--disable-extensions",
                 ]
             )
@@ -52,14 +44,13 @@ def fetch_html_with_playwright(url: str) -> str:
                 viewport={"width": 1920, "height": 1080},
                 device_scale_factor=1,
                 is_mobile=False,
-                has_touch=False,
                 locale="en-US",
                 timezone_id="America/New_York"
             )
 
             page = context.new_page()
 
-            # Mask navigator.webdriver property
+            # Hide automation flags
             page.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {
                     get: () => undefined
@@ -67,11 +58,12 @@ def fetch_html_with_playwright(url: str) -> str:
             """)
 
             page.goto(url, wait_until="domcontentloaded", timeout=25000)
+            page.wait_for_timeout(2500)  # Wait for JS hydration / React rendering
 
-            # Cloudflare challenge wait logic
+            # Handle basic bot challenge pause if encountered
             page_title = page.title().lower()
-            if "just a moment" in page_title or "attention required" in page_title or "challenge" in page_title:
-                page.wait_for_timeout(6000)
+            if "just a moment" in page_title or "challenge" in page_title:
+                page.wait_for_timeout(5000)
 
             html = page.content()
             browser.close()
@@ -107,8 +99,8 @@ def analyze_url(url: str) -> dict:
         "Accept-Language": "en-US,en;q=0.5",
     }
 
-    # Add random delay before starting to prevent burst rate-limiting
-    time.sleep(random.uniform(0.5, 1.5))
+    # Add small delay to prevent rapid IP bans
+    time.sleep(random.uniform(0.5, 1.2))
 
     html_content = ""
     try:
@@ -119,18 +111,18 @@ def analyze_url(url: str) -> dict:
         pass
 
     soup = BeautifulSoup(html_content, "html.parser") if html_content else None
-    h1_tags = [h1.get_text(strip=True) for h1 in soup.find_all("h1")] if soup else []
+    h1_tags = [h1.get_text(strip=True) for h1 in soup.find_all("h1") if h1.get_text(strip=True)] if soup else []
 
-    # Fallback to Playwright if standard scrape failed or hit bot challenge
+    # Fallback to Playwright if static request found no H1 (JS/React pages)
     if not h1_tags:
         rendered_html = fetch_html_with_playwright(url)
         if rendered_html:
             soup = BeautifulSoup(rendered_html, "html.parser")
-            h1_tags = [h1.get_text(strip=True) for h1 in soup.find_all("h1")]
+            h1_tags = [h1.get_text(strip=True) for h1 in soup.find_all("h1") if h1.get_text(strip=True)]
 
     if not soup:
         result["Status"] = "Failed to load page"
-        result["Issues"].append("Could not fetch page content (Bot Protected / Offline)")
+        result["Issues"].append("Could not fetch page content")
         return result
 
     # 1. Process H1 tags
@@ -227,7 +219,7 @@ def generate_report_card_image(df: pd.DataFrame) -> io.BytesIO:
     plt.close(fig)
     return buffer
 
-# --- Streamlit UI ---
+# --- STREAMLIT UI ---
 st.title("🔍 Bulk H1 & SEO Context Checker")
 st.write("Audit your H1 tags for missing elements, duplicates, length optimization, and contextual alignment.")
 
@@ -257,11 +249,10 @@ if st.button("Run SEO Audit", type="primary"):
         results = []
         progress_bar = st.progress(0)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [executor.submit(analyze_url, url) for url in urls_to_check]
-            for i, future in enumerate(concurrent.futures.as_completed(futures)):
-                results.append(future.result())
-                progress_bar.progress((i + 1) / len(urls_to_check))
+        # Sequential execution prevents Playwright thread crashes on bulk runs
+        for i, url in enumerate(urls_to_check):
+            results.append(analyze_url(url))
+            progress_bar.progress((i + 1) / len(urls_to_check))
 
         df_results = pd.DataFrame(results)
 
