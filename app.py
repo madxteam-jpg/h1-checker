@@ -264,7 +264,7 @@ def generate_report_card_image(df: pd.DataFrame) -> io.BytesIO:
 
 # --- STREAMLIT UI ---
 st.title("🔍 Bulk H1 SEO Checker (Max 3 URLs)")
-st.write("Audit up to 3 URLs for H1 tags, duplicates, length, and contextual relevance.")
+st.write("Audit up to 3 URLs for H1 tags, duplicates, length, and contextual relevance. We have batch limit of 3 URLs so the app can pass through server bot detections.")
 
 input_mode = st.radio("Choose Input Method:", ["Paste URLs", "Upload File (CSV/TXT)"], horizontal=True)
 
