@@ -18,13 +18,32 @@ os.system("playwright install chromium")
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
 def calculate_similarity(text1: str, text2: str) -> float:
-    """Calculates similarity ratio between two string texts."""
+    """Calculates string similarity ratio normalized on a 0 to 1 scale."""
     if not text1 or not text2:
         return 0.0
-    return SequenceMatcher(None, text1.lower(), text2.lower()).ratio()
+    return round(SequenceMatcher(None, text1.lower(), text2.lower()).ratio(), 2)
+
+def extract_h1_headings(soup: BeautifulSoup) -> list:
+    """Extracts text from <h1> tags and elements marked with ARIA role='heading' aria-level='1'."""
+    h1s = []
+    
+    # 1. Standard <h1> tags
+    for tag in soup.find_all("h1"):
+        text = tag.get_text(strip=True)
+        if text and text not in h1s:
+            h1s.append(text)
+            
+    # 2. Custom elements acting as H1 via ARIA roles
+    aria_h1s = soup.find_all(attrs={"role": "heading", "aria-level": "1"})
+    for tag in aria_h1s:
+        text = tag.get_text(strip=True)
+        if text and text not in h1s:
+            h1s.append(text)
+            
+    return h1s
 
 def fetch_html_with_playwright(url: str) -> str:
-    """Renders JS DOM while bypassing basic anti-bot challenges cleanly per-request."""
+    """Renders JS DOM with Playwright, scrolling down to ensure dynamic/lazy components load."""
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
@@ -50,17 +69,20 @@ def fetch_html_with_playwright(url: str) -> str:
 
             page = context.new_page()
 
-            # Hide automation flags
+            # Mask automation flags
             page.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {
                     get: () => undefined
                 });
             """)
 
-            page.goto(url, wait_until="domcontentloaded", timeout=25000)
-            page.wait_for_timeout(2500)  # Wait for JS hydration / React rendering
+            page.goto(url, wait_until="networkidle", timeout=30000)
+            
+            # Scroll down slightly to trigger lazy-loaded titles
+            page.evaluate("window.scrollBy(0, 300)")
+            page.wait_for_timeout(3000)
 
-            # Handle basic bot challenge pause if encountered
+            # Handle bot challenge delay
             page_title = page.title().lower()
             if "just a moment" in page_title or "challenge" in page_title:
                 page.wait_for_timeout(5000)
@@ -81,14 +103,10 @@ def analyze_url(url: str) -> dict:
         "Status": "Success",
         "H1 Count": 0,
         "H1 Content": "",
-        "Meta Title": "",
-        "Meta Description": "",
         "Is Missing H1": True,
         "Has Multiple H1s": False,
         "H1 Length Optimal": False,
-        "Title Relevance Score (%)": 0.0,
-        "Description Relevance Score (%)": 0.0,
-        "Page Context Match Score (%)": 0.0,
+        "Relevance Score": 0.0,  # Single consolidated score on a 0 to 1 scale
         "SEO Grade": "Fail",
         "Issues": []
     }
@@ -99,26 +117,25 @@ def analyze_url(url: str) -> dict:
         "Accept-Language": "en-US,en;q=0.5",
     }
 
-    # Add small delay to prevent rapid IP bans
     time.sleep(random.uniform(0.5, 1.2))
 
     html_content = ""
     try:
-        response = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
+        response = requests.get(url, headers=headers, timeout=12, allow_redirects=True)
         if response.ok and "just a moment" not in response.text.lower():
             html_content = response.text
     except Exception:
         pass
 
     soup = BeautifulSoup(html_content, "html.parser") if html_content else None
-    h1_tags = [h1.get_text(strip=True) for h1 in soup.find_all("h1") if h1.get_text(strip=True)] if soup else []
+    h1_tags = extract_h1_headings(soup) if soup else []
 
-    # Fallback to Playwright if static request found no H1 (JS/React pages)
+    # Fallback to Playwright if initial request found no H1
     if not h1_tags:
         rendered_html = fetch_html_with_playwright(url)
         if rendered_html:
             soup = BeautifulSoup(rendered_html, "html.parser")
-            h1_tags = [h1.get_text(strip=True) for h1 in soup.find_all("h1") if h1.get_text(strip=True)]
+            h1_tags = extract_h1_headings(soup)
 
     if not soup:
         result["Status"] = "Failed to load page"
@@ -140,19 +157,15 @@ def analyze_url(url: str) -> dict:
         result["Is Missing H1"] = False
         result["H1 Content"] = h1_tags[0]
 
-    # 2. Extract Meta Title & Description
+    # 2. Context Extraction
     title_tag = soup.find("title")
-    result["Meta Title"] = title_tag.get_text(strip=True) if title_tag else ""
+    meta_title = title_tag.get_text(strip=True) if title_tag else ""
 
-    desc_tag = soup.find("meta", attrs={"name": lambda x: x and x.lower() == "description"})
-    result["Meta Description"] = desc_tag["content"].strip() if (desc_tag and "content" in desc_tag.attrs) else ""
-
-    # 3. Extract Body Context
     for element in soup(["script", "style", "nav", "footer", "header"]):
         element.extract()
-    body_text = soup.get_text(separator=" ", strip=True)[:3000]
+    body_text = soup.get_text(separator=" ", strip=True)[:2000]
 
-    # 4. Perform SEO & Relevance Checks
+    # 3. Calculate Consolidated Relevance Score (0 to 1 scale)
     primary_h1 = h1_tags[0] if h1_tags else ""
 
     if primary_h1:
@@ -164,16 +177,15 @@ def analyze_url(url: str) -> dict:
         else:
             result["Issues"].append("H1 is too long (> 70 chars)")
 
-        title_sim = calculate_similarity(primary_h1, result["Meta Title"])
-        desc_sim = calculate_similarity(primary_h1, result["Meta Description"])
+        # Single score averaging title similarity and body context match
+        title_sim = calculate_similarity(primary_h1, meta_title)
         context_sim = calculate_similarity(primary_h1, body_text[:500])
-
-        result["Title Relevance Score (%)"] = round(title_sim * 100, 1)
-        result["Description Relevance Score (%)"] = round(desc_sim * 100, 1)
-        result["Page Context Match Score (%)"] = round(context_sim * 100, 1)
+        
+        # Combined relevance normalized between 0.00 and 1.00
+        result["Relevance Score"] = round((title_sim + context_sim) / 2, 2)
 
         if title_sim < 0.2:
-            result["Issues"].append("Low correlation with Meta Title")
+            result["Issues"].append("Low correlation with page context")
 
     if not result["Issues"]:
         result["SEO Grade"] = "Pass (Optimized)"
@@ -204,7 +216,7 @@ def generate_report_card_image(df: pd.DataFrame) -> io.BytesIO:
         f"Top Recommendations:\n"
         f"- Ensure every page has exactly ONE <h1> tag.\n"
         f"- Keep H1 lengths between 20 to 70 characters.\n"
-        f"- Align H1 keywords closely with your Meta Title & Description."
+        f"- Maintain a high relevance score (above 0.50)."
     )
 
     ax.text(
@@ -220,8 +232,8 @@ def generate_report_card_image(df: pd.DataFrame) -> io.BytesIO:
     return buffer
 
 # --- STREAMLIT UI ---
-st.title("🔍 Bulk H1 & SEO Context Checker")
-st.write("Audit your H1 tags for missing elements, duplicates, length optimization, and contextual alignment.")
+st.title("🔍 Compressed Bulk H1 SEO Checker")
+st.write("Audit your H1 tags for missing elements, duplicates, and context relevance.")
 
 input_mode = st.radio("Choose Input Method:", ["Paste URLs", "Upload File (CSV/TXT)"], horizontal=True)
 
@@ -249,7 +261,6 @@ if st.button("Run SEO Audit", type="primary"):
         results = []
         progress_bar = st.progress(0)
 
-        # Sequential execution prevents Playwright thread crashes on bulk runs
         for i, url in enumerate(urls_to_check):
             results.append(analyze_url(url))
             progress_bar.progress((i + 1) / len(urls_to_check))
