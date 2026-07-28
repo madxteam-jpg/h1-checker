@@ -4,8 +4,6 @@ import random
 import io
 import pandas as pd
 import matplotlib.pyplot as plt
-import requests
-from bs4 import BeautifulSoup
 from difflib import SequenceMatcher
 import streamlit as st
 
@@ -23,27 +21,18 @@ def calculate_similarity(text1: str, text2: str) -> float:
         return 0.0
     return round(SequenceMatcher(None, text1.lower(), text2.lower()).ratio(), 2)
 
-def extract_h1_headings(soup: BeautifulSoup) -> list:
-    """Extracts text from <h1> tags and elements marked with ARIA role='heading' aria-level='1'."""
-    h1s = []
-    
-    # 1. Standard <h1> tags
-    for tag in soup.find_all("h1"):
-        text = tag.get_text(strip=True)
-        if text and text not in h1s:
-            h1s.append(text)
-            
-    # 2. Custom elements acting as H1 via ARIA roles
-    aria_h1s = soup.find_all(attrs={"role": "heading", "aria-level": "1"})
-    for tag in aria_h1s:
-        text = tag.get_text(strip=True)
-        if text and text not in h1s:
-            h1s.append(text)
-            
-    return h1s
+def fetch_page_data_with_playwright(url: str) -> dict:
+    """
+    Renders the live DOM directly using Playwright, bypassing static scraper detection,
+    extracting H1s (including Shadow DOM/ARIA headings), Meta Title, and Body Context.
+    """
+    data = {
+        "h1_tags": [],
+        "meta_title": "",
+        "body_text": "",
+        "success": False
+    }
 
-def fetch_html_with_playwright(url: str) -> str:
-    """Renders JS DOM with extended timeouts and multi-stage scrolling for stubborn dynamic headings."""
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
@@ -55,6 +44,7 @@ def fetch_html_with_playwright(url: str) -> str:
                     "--disable-setuid-sandbox",
                     "--disable-infobars",
                     "--disable-extensions",
+                    "--window-size=1920,1080",
                 ]
             )
 
@@ -64,39 +54,57 @@ def fetch_html_with_playwright(url: str) -> str:
                 device_scale_factor=1,
                 is_mobile=False,
                 locale="en-US",
-                timezone_id="America/New_York"
+                timezone_id="America/New_York",
+                permissions=["geolocation"]
             )
 
             page = context.new_page()
 
-            # Mask automation flags
+            # Mask automation signature flags
             page.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined
-                });
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                window.chrome = { runtime: {} };
             """)
 
-            # 1. Increased timeout to 35 seconds
+            # 1. Navigate to URL
             page.goto(url, wait_until="domcontentloaded", timeout=35000)
-            
-            # 2. Multi-stage scroll to wake up lazy-loaded hero elements
-            page.evaluate("window.scrollBy(0, 300)")
-            page.wait_for_timeout(1000)
-            page.evaluate("window.scrollBy(0, 300)")
-            
-            # 3. Extended wait (5.0s) for full client-side JS hydration
-            page.wait_for_timeout(5000)
 
-            # Check for Cloudflare/bot challenge pause
+            # 2. Simulate slight human mouse interaction and scroll sequence
+            page.mouse.move(100, 200)
+            page.evaluate("window.scrollBy(0, 400)")
+            page.wait_for_timeout(1500)
+            page.evaluate("window.scrollBy(0, 400)")
+
+            # 3. Handle Cloudflare / bot challenge screens if detected
             page_title = page.title().lower()
-            if "just a moment" in page_title or "challenge" in page_title:
-                page.wait_for_timeout(6000)
+            if "just a moment" in page_title or "attention required" in page_title or "challenge" in page_title:
+                page.wait_for_timeout(7000)
 
-            html = page.content()
+            # 4. Wait up to 5s for dynamic client-side JS / React hydration
+            page.wait_for_timeout(4000)
+
+            # 5. Native DOM Extraction (Queries live elements directly, including ARIA H1s)
+            h1_elements = page.locator("h1, [role='heading'][aria-level='1']").all_inner_texts()
+            
+            # Clean and deduplicate extracted headings
+            cleaned_h1s = []
+            for text in h1_elements:
+                clean_text = text.strip().replace("\n", " ")
+                if clean_text and clean_text not in cleaned_h1s:
+                    cleaned_h1s.append(clean_text)
+
+            data["h1_tags"] = cleaned_h1s
+            data["meta_title"] = page.title()
+            
+            # Extract main body text directly from browser DOM
+            raw_body = page.evaluate("() => document.body ? document.body.innerText : ''")
+            data["body_text"] = " ".join(raw_body.split())[:2000] if raw_body else ""
+            data["success"] = True
+
             browser.close()
-            return html
+            return data
     except Exception:
-        return ""
+        return data
 
 def analyze_url(url: str) -> dict:
     url = url.strip()
@@ -116,37 +124,19 @@ def analyze_url(url: str) -> dict:
         "Issues": []
     }
 
-    headers = {
-        "User-Agent": USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-    }
+    # Inter-request delay (2.0s - 3.5s) to avoid triggering IP velocity checks
+    time.sleep(random.uniform(2.0, 3.5))
 
-    # Balanced 1.0s - 2.5s delay between requests
-    time.sleep(random.uniform(1.0, 2.5))
+    page_data = fetch_page_data_with_playwright(url)
 
-    html_content = ""
-    try:
-        response = requests.get(url, headers=headers, timeout=12, allow_redirects=True)
-        if response.ok and "just a moment" not in response.text.lower():
-            html_content = response.text
-    except Exception:
-        pass
-
-    soup = BeautifulSoup(html_content, "html.parser") if html_content else None
-    h1_tags = extract_h1_headings(soup) if soup else []
-
-    # Fallback to Playwright if standard scrape missed the H1
-    if not h1_tags:
-        rendered_html = fetch_html_with_playwright(url)
-        if rendered_html:
-            soup = BeautifulSoup(rendered_html, "html.parser")
-            h1_tags = extract_h1_headings(soup)
-
-    if not soup:
+    if not page_data["success"]:
         result["Status"] = "Failed to load page"
-        result["Issues"].append("Could not fetch page content")
+        result["Issues"].append("Could not fetch page content (Timeout / Cloudflare Block)")
         return result
+
+    h1_tags = page_data["h1_tags"]
+    meta_title = page_data["meta_title"]
+    body_text = page_data["body_text"]
 
     # 1. Process H1 tags
     result["H1 Count"] = len(h1_tags)
@@ -163,15 +153,7 @@ def analyze_url(url: str) -> dict:
         result["Is Missing H1"] = False
         result["H1 Content"] = h1_tags[0]
 
-    # 2. Context Extraction
-    title_tag = soup.find("title")
-    meta_title = title_tag.get_text(strip=True) if title_tag else ""
-
-    for element in soup(["script", "style", "nav", "footer", "header"]):
-        element.extract()
-    body_text = soup.get_text(separator=" ", strip=True)[:2000]
-
-    # 3. Calculate Consolidated Relevance Score (0 to 1 scale)
+    # 2. Calculate Consolidated Relevance Score (0 to 1 scale)
     primary_h1 = h1_tags[0] if h1_tags else ""
 
     if primary_h1:
@@ -265,7 +247,7 @@ if st.button("Run SEO Audit", type="primary"):
     if not urls_to_check:
         st.warning("Please provide at least one URL.")
     else:
-        st.info(f"Auditing {len(urls_to_check)} URL(s)... Please wait while pages load and render.")
+        st.info(f"Auditing {len(urls_to_check)} URL(s)... Performing full browser rendering per URL.")
 
         results = []
         progress_bar = st.progress(0)
