@@ -7,6 +7,18 @@ import concurrent.futures
 import io
 import matplotlib.pyplot as plt
 from playwright.sync_api import sync_playwright
+import os
+import subprocess
+
+# Auto-install Playwright Chromium binaries on deployment servers
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError:
+    subprocess.run(["pip", "install", "playwright"])
+    from playwright.sync_api import sync_playwright
+
+# Ensure Chromium browser binary is installed on the host
+os.system("playwright install chromium")
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
