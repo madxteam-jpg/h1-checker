@@ -43,7 +43,7 @@ def extract_h1_headings(soup: BeautifulSoup) -> list:
     return h1s
 
 def fetch_html_with_playwright(url: str) -> str:
-    """Renders JS DOM with Playwright, scrolling down to ensure dynamic/lazy components load."""
+    """Renders JS DOM with Playwright, scrolling down and waiting for headings to render."""
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
@@ -76,16 +76,17 @@ def fetch_html_with_playwright(url: str) -> str:
                 });
             """)
 
-            page.goto(url, wait_until="networkidle", timeout=30000)
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
             
-            # Scroll down slightly to trigger lazy-loaded titles
-            page.evaluate("window.scrollBy(0, 300)")
-            page.wait_for_timeout(3000)
+            # Scroll down to trigger lazy rendering and wait 3-4s
+            page.evaluate("window.scrollBy(0, 400)")
+            page.wait_for_timeout(3500)
 
-            # Handle bot challenge delay
-            page_title = page.title().lower()
-            if "just a moment" in page_title or "challenge" in page_title:
-                page.wait_for_timeout(5000)
+            # Wait explicitly for h1 if present in DOM
+            try:
+                page.wait_for_selector("h1, [role='heading'][aria-level='1']", timeout=3000)
+            except Exception:
+                pass
 
             html = page.content()
             browser.close()
@@ -106,7 +107,7 @@ def analyze_url(url: str) -> dict:
         "Is Missing H1": True,
         "Has Multiple H1s": False,
         "H1 Length Optimal": False,
-        "Relevance Score": 0.0,  # Single consolidated score on a 0 to 1 scale
+        "Relevance Score": 0.0,
         "SEO Grade": "Fail",
         "Issues": []
     }
@@ -117,7 +118,8 @@ def analyze_url(url: str) -> dict:
         "Accept-Language": "en-US,en;q=0.5",
     }
 
-    time.sleep(random.uniform(0.5, 1.2))
+    # Delay between 2.0 and 4.0 seconds to prevent bot triggers / rate limits
+    time.sleep(random.uniform(2.0, 4.0))
 
     html_content = ""
     try:
@@ -130,7 +132,7 @@ def analyze_url(url: str) -> dict:
     soup = BeautifulSoup(html_content, "html.parser") if html_content else None
     h1_tags = extract_h1_headings(soup) if soup else []
 
-    # Fallback to Playwright if initial request found no H1
+    # Fallback to Playwright if initial HTTP request found no H1
     if not h1_tags:
         rendered_html = fetch_html_with_playwright(url)
         if rendered_html:
@@ -177,11 +179,9 @@ def analyze_url(url: str) -> dict:
         else:
             result["Issues"].append("H1 is too long (> 70 chars)")
 
-        # Single score averaging title similarity and body context match
         title_sim = calculate_similarity(primary_h1, meta_title)
         context_sim = calculate_similarity(primary_h1, body_text[:500])
         
-        # Combined relevance normalized between 0.00 and 1.00
         result["Relevance Score"] = round((title_sim + context_sim) / 2, 2)
 
         if title_sim < 0.2:
@@ -232,15 +232,15 @@ def generate_report_card_image(df: pd.DataFrame) -> io.BytesIO:
     return buffer
 
 # --- STREAMLIT UI ---
-st.title("🔍 Compressed Bulk H1 SEO Checker")
-st.write("Audit your H1 tags for missing elements, duplicates, and context relevance.")
+st.title("🔍 Bulk H1 SEO Checker (Max 5 URLs)")
+st.write("Audit up to 5 URLs for H1 tags, duplicates, length, and contextual relevance.")
 
 input_mode = st.radio("Choose Input Method:", ["Paste URLs", "Upload File (CSV/TXT)"], horizontal=True)
 
 urls_to_check = []
 
 if input_mode == "Paste URLs":
-    raw_urls = st.text_area("Enter URLs (one per line):", placeholder="https://example.com\nhttps://example.org/blog")
+    raw_urls = st.text_area("Enter URLs (one per line, max 5):", placeholder="https://example.com\nhttps://example.org/blog")
     if raw_urls:
         urls_to_check = [u.strip() for u in raw_urls.split("\n") if u.strip()]
 else:
@@ -252,11 +252,16 @@ else:
         else:
             urls_to_check = [line.decode("utf-8").strip() for line in uploaded_file if line.strip()]
 
+# Enforce 5 URL limit
+if len(urls_to_check) > 5:
+    st.warning(f"Maximum limit is 5 URLs per batch. Only the first 5 of {len(urls_to_check)} URLs will be processed.")
+    urls_to_check = urls_to_check[:5]
+
 if st.button("Run SEO Audit", type="primary"):
     if not urls_to_check:
         st.warning("Please provide at least one URL.")
     else:
-        st.info(f"Auditing {len(urls_to_check)} URL(s)... Please wait.")
+        st.info(f"Auditing {len(urls_to_check)} URL(s)... Applying 2-4s delay per request.")
 
         results = []
         progress_bar = st.progress(0)
