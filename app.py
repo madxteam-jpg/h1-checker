@@ -43,7 +43,7 @@ def extract_h1_headings(soup: BeautifulSoup) -> list:
     return h1s
 
 def fetch_html_with_playwright(url: str) -> str:
-    """Renders JS DOM with Playwright, scrolling down and waiting for headings to render."""
+    """Renders JS DOM with extended timeouts and multi-stage scrolling for stubborn dynamic headings."""
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
@@ -76,17 +76,21 @@ def fetch_html_with_playwright(url: str) -> str:
                 });
             """)
 
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            # 1. Increased timeout to 35 seconds
+            page.goto(url, wait_until="domcontentloaded", timeout=35000)
             
-            # Scroll down to trigger lazy rendering and wait 3-4s
-            page.evaluate("window.scrollBy(0, 400)")
-            page.wait_for_timeout(3500)
+            # 2. Multi-stage scroll to wake up lazy-loaded hero elements
+            page.evaluate("window.scrollBy(0, 300)")
+            page.wait_for_timeout(1000)
+            page.evaluate("window.scrollBy(0, 300)")
+            
+            # 3. Extended wait (5.0s) for full client-side JS hydration
+            page.wait_for_timeout(5000)
 
-            # Wait explicitly for h1 if present in DOM
-            try:
-                page.wait_for_selector("h1, [role='heading'][aria-level='1']", timeout=3000)
-            except Exception:
-                pass
+            # Check for Cloudflare/bot challenge pause
+            page_title = page.title().lower()
+            if "just a moment" in page_title or "challenge" in page_title:
+                page.wait_for_timeout(6000)
 
             html = page.content()
             browser.close()
@@ -118,8 +122,8 @@ def analyze_url(url: str) -> dict:
         "Accept-Language": "en-US,en;q=0.5",
     }
 
-    # Delay between 2.0 and 4.0 seconds to prevent bot triggers / rate limits
-    time.sleep(random.uniform(2.0, 4.0))
+    # Balanced 1.0s - 2.5s delay between requests
+    time.sleep(random.uniform(1.0, 2.5))
 
     html_content = ""
     try:
@@ -132,7 +136,7 @@ def analyze_url(url: str) -> dict:
     soup = BeautifulSoup(html_content, "html.parser") if html_content else None
     h1_tags = extract_h1_headings(soup) if soup else []
 
-    # Fallback to Playwright if initial HTTP request found no H1
+    # Fallback to Playwright if standard scrape missed the H1
     if not h1_tags:
         rendered_html = fetch_html_with_playwright(url)
         if rendered_html:
@@ -261,7 +265,7 @@ if st.button("Run SEO Audit", type="primary"):
     if not urls_to_check:
         st.warning("Please provide at least one URL.")
     else:
-        st.info(f"Auditing {len(urls_to_check)} URL(s)... Applying 2-4s delay per request.")
+        st.info(f"Auditing {len(urls_to_check)} URL(s)... Please wait while pages load and render.")
 
         results = []
         progress_bar = st.progress(0)
