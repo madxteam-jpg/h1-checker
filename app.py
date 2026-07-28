@@ -39,9 +39,20 @@ def analyze_url(url: str) -> dict:
         "Issues": []
     }
 
+    # Enhanced headers to mimic a real desktop web browser
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1"
+    }
+
     try:
-        response = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=10)
-        if response.status_code != 200:
+        response = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
+        
+        # Check if response status is in the success range (200-299)
+        if not response.ok:
             result["Status"] = f"HTTP {response.status_code}"
             result["Issues"].append(f"HTTP Error {response.status_code}")
             return result
@@ -74,13 +85,12 @@ def analyze_url(url: str) -> dict:
         # 3. Extract Page Body Text
         for element in soup(["script", "style", "nav", "footer", "header"]):
             element.extract()
-        body_text = soup.get_text(separator=" ", strip=True)[:3000] # First 3000 chars
+        body_text = soup.get_text(separator=" ", strip=True)[:3000]
 
         # 4. Perform SEO & Relevance Checks
         primary_h1 = h1_tags[0] if h1_tags else ""
 
         if primary_h1:
-            # Check length (20 - 70 characters recommended)
             h1_len = len(primary_h1)
             if 20 <= h1_len <= 70:
                 result["H1 Length Optimal"] = True
@@ -89,7 +99,6 @@ def analyze_url(url: str) -> dict:
             else:
                 result["Issues"].append("H1 is too long (> 70 chars)")
 
-            # Check relevance with Title, Description, and Body Context
             title_sim = calculate_similarity(primary_h1, result["Meta Title"])
             desc_sim = calculate_similarity(primary_h1, result["Meta Description"])
             context_sim = calculate_similarity(primary_h1, body_text[:500])
