@@ -5,6 +5,7 @@ from bs4 import BeautifulSoup
 from difflib import SequenceMatcher
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from playwright.sync_api import sync_playwright
 
 # --- STREAMLIT PAGE CONFIG (MUST BE AT THE VERY TOP) ---
@@ -17,22 +18,17 @@ USER_AGENTS = [
 ]
 
 def calculate_similarity(text1: str, text2: str) -> float:
-    """Calculates string similarity ratio normalized on a 0 to 1 scale."""
     if not text1 or not text2:
         return 0.0
     return round(SequenceMatcher(None, text1.lower(), text2.lower()).ratio(), 2)
 
 def extract_h1_headings(soup: BeautifulSoup) -> list:
-    """Extracts text from <h1> tags and elements marked with ARIA role='heading' aria-level='1'."""
     h1s = []
-    
-    # Standard <h1> tags
     for tag in soup.find_all("h1"):
         text = tag.get_text(strip=True)
         if text and text not in h1s:
             h1s.append(text)
             
-    # ARIA level 1 headings
     aria_h1s = soup.find_all(attrs={"role": "heading", "aria-level": "1"})
     for tag in aria_h1s:
         text = tag.get_text(strip=True)
@@ -41,38 +37,13 @@ def extract_h1_headings(soup: BeautifulSoup) -> list:
             
     return h1s
 
-def capture_screenshot_only(url: str, user_agent: str) -> bytes:
-    """Helper function to grab a screenshot via Playwright if initial request was static."""
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
-            )
-            context = browser.new_context(user_agent=user_agent, viewport={"width": 1280, "height": 800})
-            page = context.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=20000)
-            page.wait_for_timeout(1000)
-            screenshot = page.screenshot(full_page=False)
-            browser.close()
-            return screenshot
-    except Exception:
-        return None
-
 def fetch_page_data(url: str) -> dict:
-    """
-    Hybrid Fetching Strategy:
-    1. Tries stealth HTTP request with full browser headers first.
-    2. Falls back to headless Playwright if static parse yields no H1 or fails.
-    3. Captures a screenshot via Playwright.
-    """
     data = {
         "h1_tags": [],
         "meta_title": "",
         "body_text": "",
         "success": False,
-        "is_cloudflare": False,
-        "screenshot": None
+        "is_cloudflare": False
     }
 
     user_agent = random.choice(USER_AGENTS)
@@ -82,14 +53,9 @@ def fetch_page_data(url: str) -> dict:
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1"
+        "Upgrade-Insecure-Requests": "1"
     }
 
-    # --- PATH 1: Fast & Stealth HTTP Fetch ---
     try:
         response = requests.get(url, headers=headers, timeout=12, allow_redirects=True)
         if response.ok and "just a moment" not in response.text.lower() and "enable javascript" not in response.text.lower():
@@ -105,43 +71,24 @@ def fetch_page_data(url: str) -> dict:
                     el.extract()
                 data["body_text"] = soup.get_text(separator=" ", strip=True)[:2000]
                 data["success"] = True
-                
-                # Fetch screenshot via Playwright
-                data["screenshot"] = capture_screenshot_only(url, user_agent)
                 return data
     except Exception:
         pass
 
-    # --- PATH 2: Playwright Headless Fallback & Screenshot Capture ---
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=True,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-infobars",
-                    "--disable-extensions",
-                ]
+                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
             )
-
-            context = browser.new_context(
-                user_agent=user_agent,
-                viewport={"width": 1280, "height": 800},
-                locale="en-US",
-                timezone_id="America/New_York"
-            )
-
+            context = browser.new_context(user_agent=user_agent, viewport={"width": 1280, "height": 800})
             page = context.new_page()
-            page.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined });")
-
             page.goto(url, wait_until="domcontentloaded", timeout=25000)
             page.evaluate("window.scrollBy(0, 300)")
             page.wait_for_timeout(2000)
 
             page_title = page.title().lower()
-            if "just a moment" in page_title or "attention required" in page_title or "challenge" in page_title:
+            if "just a moment" in page_title or "attention required" in page_title:
                 data["is_cloudflare"] = True
                 browser.close()
                 return data
@@ -154,11 +101,7 @@ def fetch_page_data(url: str) -> dict:
             
             raw_body = page.evaluate("() => document.body ? document.body.innerText : ''")
             data["body_text"] = " ".join(raw_body.split())[:2000] if raw_body else ""
-            
-            # Capture page screenshot byte payload directly from Playwright session
-            data["screenshot"] = page.screenshot(full_page=False)
             data["success"] = True
-
             browser.close()
             return data
     except Exception:
@@ -179,14 +122,11 @@ def analyze_url(url: str) -> dict:
         "H1 Length Optimal": False,
         "Relevance Score": 0.0,
         "SEO Grade": "Fail",
-        "Issues": "",
-        "Screenshot": None
+        "Issues": ""
     }
 
     issues_list = []
-
     time.sleep(random.uniform(1.5, 2.5))
-
     page_data = fetch_page_data(url)
 
     if page_data["is_cloudflare"]:
@@ -199,12 +139,10 @@ def analyze_url(url: str) -> dict:
         result["Issues"] = "Could not fetch content (Timeout/Block)"
         return result
 
-    result["Screenshot"] = page_data["screenshot"]
     h1_tags = page_data["h1_tags"]
     meta_title = page_data["meta_title"]
     body_text = page_data["body_text"]
 
-    # 1. Process H1 tags
     result["H1 Count"] = len(h1_tags)
 
     if len(h1_tags) == 0:
@@ -219,7 +157,6 @@ def analyze_url(url: str) -> dict:
         result["Is Missing H1"] = False
         result["H1 Content"] = h1_tags[0]
 
-    # 2. Relevance Calculation
     primary_h1 = h1_tags[0] if h1_tags else ""
 
     if primary_h1:
@@ -233,7 +170,6 @@ def analyze_url(url: str) -> dict:
 
         title_sim = calculate_similarity(primary_h1, meta_title)
         context_sim = calculate_similarity(primary_h1, body_text[:500])
-        
         result["Relevance Score"] = round((title_sim + context_sim) / 2, 2)
 
         if title_sim < 0.2:
@@ -270,7 +206,6 @@ else:
         else:
             urls_to_check = [line.decode("utf-8").strip() for line in uploaded_file if line.strip()]
 
-# Enforce 3 URL limit
 if len(urls_to_check) > 3:
     st.warning(f"Maximum limit is 3 URLs per batch. Processing only the first 3 of {len(urls_to_check)} URLs.")
     urls_to_check = urls_to_check[:3]
@@ -279,7 +214,7 @@ if st.button("Run SEO Audit", type="primary"):
     if not urls_to_check:
         st.warning("Please provide at least one URL.")
     else:
-        st.info(f"Auditing {len(urls_to_check)} URL(s)... Fetching content and screenshots.")
+        st.info(f"Auditing {len(urls_to_check)} URL(s)... Fetching content.")
 
         results = []
         progress_bar = st.progress(0)
@@ -288,48 +223,11 @@ if st.button("Run SEO Audit", type="primary"):
             results.append(analyze_url(url))
             progress_bar.progress((i + 1) / len(urls_to_check))
 
-        df_results = pd.DataFrame(results)
-
-        # Separate binary screenshots from clean tabular DataFrame export
-        screenshots = df_results[["URL", "Screenshot"]].copy()
-        df_display = df_results.drop(columns=["Screenshot"])
-
-        # PyArrow Compatibility
-        df_display["URL"] = df_display["URL"].astype(str)
-        df_display["Status"] = df_display["Status"].astype(str)
-        df_display["H1 Count"] = pd.to_numeric(df_display["H1 Count"], errors="coerce").fillna(0).astype(int)
-        df_display["H1 Content"] = df_display["H1 Content"].astype(str)
-        df_display["Is Missing H1"] = df_display["Is Missing H1"].astype(bool)
-        df_display["Has Multiple H1s"] = df_display["Has Multiple H1s"].astype(bool)
-        df_display["H1 Length Optimal"] = df_display["H1 Length Optimal"].astype(bool)
-        df_display["Relevance Score"] = pd.to_numeric(df_display["Relevance Score"], errors="coerce").fillna(0.0).astype(float)
-        df_display["SEO Grade"] = df_display["SEO Grade"].astype(str)
-        df_display["Issues"] = df_display["Issues"].astype(str)
+        df_display = pd.DataFrame(results)
 
         st.success("Audit Completed!")
 
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total URLs Scanned", len(df_display))
-        col2.metric("Missing H1", len(df_display[df_display["Is Missing H1"] == True]))
-        col3.metric("Multiple H1s", len(df_display[df_display["Has Multiple H1s"] == True]))
-        col4.metric("SEO Passed", len(df_display[df_display["SEO Grade"] == "Pass (Optimized)"]))
-
-        st.subheader("Detailed Audit Results")
-        st.dataframe(df_display, use_container_width=True)
-
-        # --- SCREENSHOT DISPLAY SECTION ---
-        st.subheader("📸 Page Screenshots")
-        img_cols = st.columns(len(screenshots))
-        for idx, row in screenshots.iterrows():
-            with img_cols[idx]:
-                st.write(f"**{row['URL']}**")
-                if row["Screenshot"]:
-                    st.image(row["Screenshot"], caption="Captured result page", use_column_width=True)
-                else:
-                    st.caption("No screenshot available.")
-
-        # --- NATIVE SUMMARY REPORT CARD (REPLACES MATPLOTLIB) ---
-        st.subheader("📊 Audit Summary Card")
+        # --- HTML CONTAINER FOR SCREENSHOT CAPTURE (ID: report-summary-card) ---
         total = len(df_display)
         optimized = len(df_display[df_display["SEO Grade"] == "Pass (Optimized)"])
         missing_h1 = len(df_display[df_display["Is Missing H1"] == True])
@@ -338,27 +236,74 @@ if st.button("Run SEO Audit", type="primary"):
 
         st.markdown(
             f"""
-            <div style="background-color: #f4f4f9; padding: 20px; border-radius: 8px; border: 1px solid #ddd; font-family: monospace;">
-                <h4>SEO H1 AUDIT REPORT SUMMARY</h4>
-                <hr>
-                <ul>
-                    <li><b>Total URLs Scanned:</b> {total}</li>
-                    <li><b>Fully Optimized Pages:</b> {optimized} ({opt_pct:.1f}%)</li>
-                    <li><b>Missing H1 Errors:</b> {missing_h1}</li>
-                    <li><b>Multiple H1 Errors:</b> {multiple_h1}</li>
-                </ul>
-                <b>Top Recommendations:</b>
-                <ul>
-                    <li>Ensure every page has exactly ONE &lt;h1&gt; tag.</li>
-                    <li>Keep H1 lengths between 20 to 70 characters.</li>
-                    <li>Maintain a high relevance score (above 0.50).</li>
-                </ul>
+            <div id="report-summary-card" style="background-color: #ffffff; padding: 25px; border-radius: 10px; border: 2px solid #e0e0e0; font-family: sans-serif; margin-bottom: 20px;">
+                <h3 style="color: #1E88E5; margin-top:0;">📊 SEO H1 Audit Summary Report</h3>
+                <hr style="border: 0.5px solid #eee;">
+                <div style="display: flex; justify-content: space-around; background-color: #f8f9fa; padding: 15px; border-radius: 8px;">
+                    <div style="text-align: center;">
+                        <h4 style="margin:0; color:#555;">Scanned</h4>
+                        <p style="font-size: 22px; font-weight: bold; margin:0;">{total}</p>
+                    </div>
+                    <div style="text-align: center;">
+                        <h4 style="margin:0; color:#4CAF50;">Optimized</h4>
+                        <p style="font-size: 22px; font-weight: bold; margin:0; color:#4CAF50;">{optimized} ({opt_pct:.1f}%)</p>
+                    </div>
+                    <div style="text-align: center;">
+                        <h4 style="margin:0; color:#F44336;">Missing H1</h4>
+                        <p style="font-size: 22px; font-weight: bold; margin:0; color:#F44336;">{missing_h1}</p>
+                    </div>
+                    <div style="text-align: center;">
+                        <h4 style="margin:0; color:#FF9800;">Multiple H1s</h4>
+                        <p style="font-size: 22px; font-weight: bold; margin:0; color:#FF9800;">{multiple_h1}</p>
+                    </div>
+                </div>
+                <h4 style="margin-top: 20px;">Detailed Breakdown</h4>
+                {df_display[['URL', 'H1 Count', 'H1 Content', 'SEO Grade', 'Issues']].to_html(index=False, classes='table table-striped')}
             </div>
             """,
             unsafe_allow_html=True
         )
 
+        st.subheader("Detailed Audit Results Table")
+        st.dataframe(df_display, use_container_width=True)
+
         st.subheader("📥 Export Options")
+        
+        # --- CLIENT-SIDE SCREENSHOT DOWNLOAD BUTTON ---
+        components.html(
+            """
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.png"></script>
+            <script>
+            function captureReport() {
+                const reportElement = window.parent.document.getElementById("report-summary-card");
+                if (reportElement) {
+                    html2canvas(reportElement, { scale: 2 }).then(canvas => {
+                        const image = canvas.toDataURL("image/png");
+                        const link = document.createElement("a");
+                        link.href = image;
+                        link.download = "seo_audit_summary_report.png";
+                        link.click();
+                    });
+                } else {
+                    alert("Report card element not found.");
+                }
+            }
+            </script>
+            <button onclick="captureReport()" style="
+                background-color: #ff4b4b;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                font-size: 16px;
+                border-radius: 8px;
+                cursor: pointer;
+                font-weight: bold;">
+                📸 Download Screenshot of Report Summary
+            </button>
+            """,
+            height=60
+        )
+
         csv_data = df_display.to_csv(index=False).encode("utf-8")
         st.download_button(
             label="📄 Download Results as CSV",
