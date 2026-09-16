@@ -7,6 +7,14 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from playwright.sync_api import sync_playwright
+import subprocess
+
+# Automatically install Playwright browser binary on Streamlit Cloud instance
+@st.cache_resource
+def install_playwright_browsers():
+    subprocess.run(["python", "-m", "playwright", "install", "chromium"])
+
+install_playwright_browsers()
 
 # --- STREAMLIT PAGE CONFIG (MUST BE AT THE VERY TOP) ---
 st.set_page_config(page_title="Bulk H1 SEO Checker", page_icon="🔍", layout="wide")
