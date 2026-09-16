@@ -1,22 +1,14 @@
 import time
 import random
+import io
 import pandas as pd
 from bs4 import BeautifulSoup
 from difflib import SequenceMatcher
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 from playwright.sync_api import sync_playwright
-import subprocess
 
-# Automatically install Playwright browser binary on Streamlit Cloud instance
-@st.cache_resource
-def install_playwright_browsers():
-    subprocess.run(["python", "-m", "playwright", "install", "chromium"])
-
-install_playwright_browsers()
-
-# --- STREAMLIT PAGE CONFIG (MUST BE AT THE VERY TOP) ---
+# --- STREAMLIT PAGE CONFIG ---
 st.set_page_config(page_title="Bulk H1 SEO Checker", page_icon="🔍", layout="wide")
 
 USER_AGENTS = [
@@ -193,6 +185,93 @@ def analyze_url(url: str) -> dict:
     result["Issues"] = "; ".join(issues_list) if issues_list else "None"
     return result
 
+def render_report_html(df: pd.DataFrame) -> str:
+    """Generates the HTML content for the summary report."""
+    total = len(df)
+    optimized = len(df[df["SEO Grade"] == "Pass (Optimized)"])
+    missing_h1 = len(df[df["Is Missing H1"] == True])
+    multiple_h1 = len(df[df["Has Multiple H1s"] == True])
+    opt_pct = (optimized / total) * 100 if total else 0.0
+
+    table_rows = ""
+    for _, row in df.iterrows():
+        table_rows += f"""
+        <tr>
+            <td style="padding: 10px; border: 1px solid #ddd;">{row['URL']}</td>
+            <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">{row['H1 Count']}</td>
+            <td style="padding: 10px; border: 1px solid #ddd;">{row['H1 Content']}</td>
+            <td style="padding: 10px; border: 1px solid #ddd;"><b>{row['SEO Grade']}</b></td>
+            <td style="padding: 10px; border: 1px solid #ddd;">{row['Issues']}</td>
+        </tr>
+        """
+
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            body {{ font-family: Arial, sans-serif; background-color: #ffffff; padding: 20px; }}
+            .card {{ background: #ffffff; padding: 25px; border-radius: 10px; border: 2px solid #e0e0e0; }}
+            .metrics {{ display: flex; justify-content: space-around; background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px; }}
+            .metric-box {{ text-align: center; }}
+            .metric-val {{ font-size: 22px; font-weight: bold; margin: 5px 0 0 0; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 15px; }}
+            th {{ background-color: #f1f3f5; padding: 10px; border: 1px solid #ddd; text-align: left; }}
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h2 style="color: #1E88E5; margin-top: 0;">📊 SEO H1 Audit Summary Report</h2>
+            <hr style="border: 0.5px solid #eee;">
+            <div class="metrics">
+                <div class="metric-box">
+                    <h4 style="margin:0; color:#555;">Scanned</h4>
+                    <p class="metric-val">{total}</p>
+                </div>
+                <div class="metric-box">
+                    <h4 style="margin:0; color:#4CAF50;">Optimized</h4>
+                    <p class="metric-val" style="color:#4CAF50;">{optimized} ({opt_pct:.1f}%)</p>
+                </div>
+                <div class="metric-box">
+                    <h4 style="margin:0; color:#F44336;">Missing H1</h4>
+                    <p class="metric-val" style="color:#F44336;">{missing_h1}</p>
+                </div>
+                <div class="metric-box">
+                    <h4 style="margin:0; color:#FF9800;">Multiple H1s</h4>
+                    <p class="metric-val" style="color:#FF9800;">{multiple_h1}</p>
+                </div>
+            </div>
+            <h3>Detailed Breakdown</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>URL</th>
+                        <th>H1 Count</th>
+                        <th>H1 Content</th>
+                        <th>SEO Grade</th>
+                        <th>Issues</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {table_rows}
+                </tbody>
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+def generate_report_screenshot(html_content: str) -> bytes:
+    """Uses Playwright on the server to render HTML and capture a clean PNG screenshot."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        page = browser.new_page(viewport={"width": 1200, "height": 800})
+        page.set_content(html_content)
+        page.wait_for_timeout(500)
+        screenshot = page.screenshot(full_page=True)
+        browser.close()
+        return screenshot
+
 # --- STREAMLIT UI ---
 st.title("🔍 Bulk H1 SEO Checker (Max 3 URLs)")
 st.write("Audit up to 3 URLs for H1 tags, duplicates, length, and contextual relevance.")
@@ -235,87 +314,32 @@ if st.button("Run SEO Audit", type="primary"):
 
         st.success("Audit Completed!")
 
-        # --- HTML CONTAINER FOR SCREENSHOT CAPTURE (ID: report-summary-card) ---
-        total = len(df_display)
-        optimized = len(df_display[df_display["SEO Grade"] == "Pass (Optimized)"])
-        missing_h1 = len(df_display[df_display["Is Missing H1"] == True])
-        multiple_h1 = len(df_display[df_display["Has Multiple H1s"] == True])
-        opt_pct = (optimized / total) * 100 if total else 0.0
-
-        st.markdown(
-            f"""
-            <div id="report-summary-card" style="background-color: #ffffff; padding: 25px; border-radius: 10px; border: 2px solid #e0e0e0; font-family: sans-serif; margin-bottom: 20px;">
-                <h3 style="color: #1E88E5; margin-top:0;">📊 SEO H1 Audit Summary Report</h3>
-                <hr style="border: 0.5px solid #eee;">
-                <div style="display: flex; justify-content: space-around; background-color: #f8f9fa; padding: 15px; border-radius: 8px;">
-                    <div style="text-align: center;">
-                        <h4 style="margin:0; color:#555;">Scanned</h4>
-                        <p style="font-size: 22px; font-weight: bold; margin:0;">{total}</p>
-                    </div>
-                    <div style="text-align: center;">
-                        <h4 style="margin:0; color:#4CAF50;">Optimized</h4>
-                        <p style="font-size: 22px; font-weight: bold; margin:0; color:#4CAF50;">{optimized} ({opt_pct:.1f}%)</p>
-                    </div>
-                    <div style="text-align: center;">
-                        <h4 style="margin:0; color:#F44336;">Missing H1</h4>
-                        <p style="font-size: 22px; font-weight: bold; margin:0; color:#F44336;">{missing_h1}</p>
-                    </div>
-                    <div style="text-align: center;">
-                        <h4 style="margin:0; color:#FF9800;">Multiple H1s</h4>
-                        <p style="font-size: 22px; font-weight: bold; margin:0; color:#FF9800;">{multiple_h1}</p>
-                    </div>
-                </div>
-                <h4 style="margin-top: 20px;">Detailed Breakdown</h4>
-                {df_display[['URL', 'H1 Count', 'H1 Content', 'SEO Grade', 'Issues']].to_html(index=False, classes='table table-striped')}
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+        # --- DISPLAY HTML REPORT SUMMARY ---
+        report_html = render_report_html(df_display)
+        st.markdown(report_html, unsafe_allow_html=True)
 
         st.subheader("Detailed Audit Results Table")
         st.dataframe(df_display, use_container_width=True)
 
         st.subheader("📥 Export Options")
-        
-        # --- CLIENT-SIDE SCREENSHOT DOWNLOAD BUTTON ---
-        components.html(
-            """
-            <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.png"></script>
-            <script>
-            function captureReport() {
-                const reportElement = window.parent.document.getElementById("report-summary-card");
-                if (reportElement) {
-                    html2canvas(reportElement, { scale: 2 }).then(canvas => {
-                        const image = canvas.toDataURL("image/png");
-                        const link = document.createElement("a");
-                        link.href = image;
-                        link.download = "seo_audit_summary_report.png";
-                        link.click();
-                    });
-                } else {
-                    alert("Report card element not found.");
-                }
-            }
-            </script>
-            <button onclick="captureReport()" style="
-                background-color: #ff4b4b;
-                color: white;
-                border: none;
-                padding: 10px 20px;
-                font-size: 16px;
-                border-radius: 8px;
-                cursor: pointer;
-                font-weight: bold;">
-                📸 Download Screenshot of Report Summary
-            </button>
-            """,
-            height=60
-        )
+        d_col1, d_col2 = st.columns(2)
 
+        # CSV Download
         csv_data = df_display.to_csv(index=False).encode("utf-8")
-        st.download_button(
+        d_col1.download_button(
             label="📄 Download Results as CSV",
             data=csv_data,
             file_name="h1_seo_audit_results.csv",
             mime="text/csv"
+        )
+
+        # Native Streamlit PNG Download generated via Playwright backend
+        with st.spinner("Generating PNG summary report..."):
+            png_bytes = generate_report_screenshot(report_html)
+
+        d_col2.download_button(
+            label="📸 Download Summary Report as PNG",
+            data=png_bytes,
+            file_name="h1_seo_summary_report.png",
+            mime="image/png"
         )
