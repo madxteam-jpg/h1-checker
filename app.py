@@ -1,19 +1,14 @@
-import os
 import time
 import random
-import io
 import pandas as pd
-import matplotlib.pyplot as plt
 from bs4 import BeautifulSoup
 from difflib import SequenceMatcher
 import requests
 import streamlit as st
+from playwright.sync_api import sync_playwright
 
 # --- STREAMLIT PAGE CONFIG (MUST BE AT THE VERY TOP) ---
 st.set_page_config(page_title="Bulk H1 SEO Checker", page_icon="🔍", layout="wide")
-
-# Install Playwright browser binary on host automatically
-os.system("playwright install chromium")
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -46,18 +41,38 @@ def extract_h1_headings(soup: BeautifulSoup) -> list:
             
     return h1s
 
+def capture_screenshot_only(url: str, user_agent: str) -> bytes:
+    """Helper function to grab a screenshot via Playwright if initial request was static."""
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+            )
+            context = browser.new_context(user_agent=user_agent, viewport={"width": 1280, "height": 800})
+            page = context.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            page.wait_for_timeout(1000)
+            screenshot = page.screenshot(full_page=False)
+            browser.close()
+            return screenshot
+    except Exception:
+        return None
+
 def fetch_page_data(url: str) -> dict:
     """
     Hybrid Fetching Strategy:
-    1. Tries stealth HTTP request with full browser headers first (bypasses most Cloudflare JS challenges).
+    1. Tries stealth HTTP request with full browser headers first.
     2. Falls back to headless Playwright if static parse yields no H1 or fails.
+    3. Captures a screenshot via Playwright.
     """
     data = {
         "h1_tags": [],
         "meta_title": "",
         "body_text": "",
         "success": False,
-        "is_cloudflare": False
+        "is_cloudflare": False,
+        "screenshot": None
     }
 
     user_agent = random.choice(USER_AGENTS)
@@ -90,13 +105,15 @@ def fetch_page_data(url: str) -> dict:
                     el.extract()
                 data["body_text"] = soup.get_text(separator=" ", strip=True)[:2000]
                 data["success"] = True
+                
+                # Fetch screenshot via Playwright
+                data["screenshot"] = capture_screenshot_only(url, user_agent)
                 return data
     except Exception:
         pass
 
-    # --- PATH 2: Playwright Headless Fallback ---
+    # --- PATH 2: Playwright Headless Fallback & Screenshot Capture ---
     try:
-        from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=True,
@@ -111,7 +128,7 @@ def fetch_page_data(url: str) -> dict:
 
             context = browser.new_context(
                 user_agent=user_agent,
-                viewport={"width": 1920, "height": 1080},
+                viewport={"width": 1280, "height": 800},
                 locale="en-US",
                 timezone_id="America/New_York"
             )
@@ -121,7 +138,7 @@ def fetch_page_data(url: str) -> dict:
 
             page.goto(url, wait_until="domcontentloaded", timeout=25000)
             page.evaluate("window.scrollBy(0, 300)")
-            page.wait_for_timeout(3000)
+            page.wait_for_timeout(2000)
 
             page_title = page.title().lower()
             if "just a moment" in page_title or "attention required" in page_title or "challenge" in page_title:
@@ -137,6 +154,9 @@ def fetch_page_data(url: str) -> dict:
             
             raw_body = page.evaluate("() => document.body ? document.body.innerText : ''")
             data["body_text"] = " ".join(raw_body.split())[:2000] if raw_body else ""
+            
+            # Capture page screenshot byte payload directly from Playwright session
+            data["screenshot"] = page.screenshot(full_page=False)
             data["success"] = True
 
             browser.close()
@@ -159,13 +179,13 @@ def analyze_url(url: str) -> dict:
         "H1 Length Optimal": False,
         "Relevance Score": 0.0,
         "SEO Grade": "Fail",
-        "Issues": ""
+        "Issues": "",
+        "Screenshot": None
     }
 
     issues_list = []
 
-    # Delay between requests to avoid triggering velocity limits
-    time.sleep(random.uniform(2.0, 3.5))
+    time.sleep(random.uniform(1.5, 2.5))
 
     page_data = fetch_page_data(url)
 
@@ -179,6 +199,7 @@ def analyze_url(url: str) -> dict:
         result["Issues"] = "Could not fetch content (Timeout/Block)"
         return result
 
+    result["Screenshot"] = page_data["screenshot"]
     h1_tags = page_data["h1_tags"]
     meta_title = page_data["meta_title"]
     body_text = page_data["body_text"]
@@ -228,43 +249,9 @@ def analyze_url(url: str) -> dict:
     result["Issues"] = "; ".join(issues_list) if issues_list else "None"
     return result
 
-def generate_report_card_image(df: pd.DataFrame) -> io.BytesIO:
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.axis("off")
-
-    total = len(df)
-    missing_h1 = len(df[df["Is Missing H1"] == True])
-    multiple_h1 = len(df[df["Has Multiple H1s"] == True])
-    optimized = len(df[df["SEO Grade"] == "Pass (Optimized)"])
-
-    content = (
-        f"SEO H1 AUDIT REPORT SUMMARY\n"
-        f"{'='*35}\n\n"
-        f"• Total URLs Scanned: {total}\n"
-        f"• Fully Optimized Pages: {optimized} ({(optimized/total)*100 if total else 0:.1f}%)\n"
-        f"• Missing H1 Errors: {missing_h1}\n"
-        f"• Multiple H1 Errors: {multiple_h1}\n\n"
-        f"Top Recommendations:\n"
-        f"- Ensure every page has exactly ONE <h1> tag.\n"
-        f"- Keep H1 lengths between 20 to 70 characters.\n"
-        f"- Maintain a high relevance score (above 0.50)."
-    )
-
-    ax.text(
-        0.05, 0.95, content,
-        fontsize=14, verticalalignment="top", fontfamily="monospace",
-        bbox=dict(boxstyle="round,pad=1", facecolor="#f4f4f9", edgecolor="#333333")
-    )
-
-    buffer = io.BytesIO()
-    plt.savefig(buffer, format="png", bbox_inches="tight", dpi=200)
-    buffer.seek(0)
-    plt.close(fig)
-    return buffer
-
 # --- STREAMLIT UI ---
 st.title("🔍 Bulk H1 SEO Checker (Max 3 URLs)")
-st.write("Audit up to 3 URLs for H1 tags, duplicates, length, and contextual relevance. We have batch limit of 3 URLs so the app can pass through server bot detections.")
+st.write("Audit up to 3 URLs for H1 tags, duplicates, length, and contextual relevance.")
 
 input_mode = st.radio("Choose Input Method:", ["Paste URLs", "Upload File (CSV/TXT)"], horizontal=True)
 
@@ -292,7 +279,7 @@ if st.button("Run SEO Audit", type="primary"):
     if not urls_to_check:
         st.warning("Please provide at least one URL.")
     else:
-        st.info(f"Auditing {len(urls_to_check)} URL(s)... Fetching content.")
+        st.info(f"Auditing {len(urls_to_check)} URL(s)... Fetching content and screenshots.")
 
         results = []
         progress_bar = st.progress(0)
@@ -303,44 +290,79 @@ if st.button("Run SEO Audit", type="primary"):
 
         df_results = pd.DataFrame(results)
 
+        # Separate binary screenshots from clean tabular DataFrame export
+        screenshots = df_results[["URL", "Screenshot"]].copy()
+        df_display = df_results.drop(columns=["Screenshot"])
+
         # PyArrow Compatibility
-        df_results["URL"] = df_results["URL"].astype(str)
-        df_results["Status"] = df_results["Status"].astype(str)
-        df_results["H1 Count"] = pd.to_numeric(df_results["H1 Count"], errors="coerce").fillna(0).astype(int)
-        df_results["H1 Content"] = df_results["H1 Content"].astype(str)
-        df_results["Is Missing H1"] = df_results["Is Missing H1"].astype(bool)
-        df_results["Has Multiple H1s"] = df_results["Has Multiple H1s"].astype(bool)
-        df_results["H1 Length Optimal"] = df_results["H1 Length Optimal"].astype(bool)
-        df_results["Relevance Score"] = pd.to_numeric(df_results["Relevance Score"], errors="coerce").fillna(0.0).astype(float)
-        df_results["SEO Grade"] = df_results["SEO Grade"].astype(str)
-        df_results["Issues"] = df_results["Issues"].astype(str)
+        df_display["URL"] = df_display["URL"].astype(str)
+        df_display["Status"] = df_display["Status"].astype(str)
+        df_display["H1 Count"] = pd.to_numeric(df_display["H1 Count"], errors="coerce").fillna(0).astype(int)
+        df_display["H1 Content"] = df_display["H1 Content"].astype(str)
+        df_display["Is Missing H1"] = df_display["Is Missing H1"].astype(bool)
+        df_display["Has Multiple H1s"] = df_display["Has Multiple H1s"].astype(bool)
+        df_display["H1 Length Optimal"] = df_display["H1 Length Optimal"].astype(bool)
+        df_display["Relevance Score"] = pd.to_numeric(df_display["Relevance Score"], errors="coerce").fillna(0.0).astype(float)
+        df_display["SEO Grade"] = df_display["SEO Grade"].astype(str)
+        df_display["Issues"] = df_display["Issues"].astype(str)
 
         st.success("Audit Completed!")
 
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total URLs Scanned", len(df_results))
-        col2.metric("Missing H1", len(df_results[df_results["Is Missing H1"] == True]))
-        col3.metric("Multiple H1s", len(df_results[df_results["Has Multiple H1s"] == True]))
-        col4.metric("SEO Passed", len(df_results[df_results["SEO Grade"] == "Pass (Optimized)"]))
+        col1.metric("Total URLs Scanned", len(df_display))
+        col2.metric("Missing H1", len(df_display[df_display["Is Missing H1"] == True]))
+        col3.metric("Multiple H1s", len(df_display[df_display["Has Multiple H1s"] == True]))
+        col4.metric("SEO Passed", len(df_display[df_display["SEO Grade"] == "Pass (Optimized)"]))
 
         st.subheader("Detailed Audit Results")
-        st.dataframe(df_results, use_container_width=True)
+        st.dataframe(df_display, use_container_width=True)
+
+        # --- SCREENSHOT DISPLAY SECTION ---
+        st.subheader("📸 Page Screenshots")
+        img_cols = st.columns(len(screenshots))
+        for idx, row in screenshots.iterrows():
+            with img_cols[idx]:
+                st.write(f"**{row['URL']}**")
+                if row["Screenshot"]:
+                    st.image(row["Screenshot"], caption="Captured result page", use_column_width=True)
+                else:
+                    st.caption("No screenshot available.")
+
+        # --- NATIVE SUMMARY REPORT CARD (REPLACES MATPLOTLIB) ---
+        st.subheader("📊 Audit Summary Card")
+        total = len(df_display)
+        optimized = len(df_display[df_display["SEO Grade"] == "Pass (Optimized)"])
+        missing_h1 = len(df_display[df_display["Is Missing H1"] == True])
+        multiple_h1 = len(df_display[df_display["Has Multiple H1s"] == True])
+        opt_pct = (optimized / total) * 100 if total else 0.0
+
+        st.markdown(
+            f"""
+            <div style="background-color: #f4f4f9; padding: 20px; border-radius: 8px; border: 1px solid #ddd; font-family: monospace;">
+                <h4>SEO H1 AUDIT REPORT SUMMARY</h4>
+                <hr>
+                <ul>
+                    <li><b>Total URLs Scanned:</b> {total}</li>
+                    <li><b>Fully Optimized Pages:</b> {optimized} ({opt_pct:.1f}%)</li>
+                    <li><b>Missing H1 Errors:</b> {missing_h1}</li>
+                    <li><b>Multiple H1 Errors:</b> {multiple_h1}</li>
+                </ul>
+                <b>Top Recommendations:</b>
+                <ul>
+                    <li>Ensure every page has exactly ONE &lt;h1&gt; tag.</li>
+                    <li>Keep H1 lengths between 20 to 70 characters.</li>
+                    <li>Maintain a high relevance score (above 0.50).</li>
+                </ul>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
         st.subheader("📥 Export Options")
-        d_col1, d_col2 = st.columns(2)
-
-        csv_data = df_results.to_csv(index=False).encode("utf-8")
-        d_col1.download_button(
+        csv_data = df_display.to_csv(index=False).encode("utf-8")
+        st.download_button(
             label="📄 Download Results as CSV",
             data=csv_data,
             file_name="h1_seo_audit_results.csv",
             mime="text/csv"
-        )
-
-        img_buffer = generate_report_card_image(df_results)
-        d_col2.download_button(
-            label="🖼️ Download Summary Report as PNG Image",
-            data=img_buffer,
-            file_name="h1_seo_report_summary.png",
-            mime="image/png"
         )
