@@ -186,7 +186,7 @@ def analyze_url(url: str) -> dict:
     return result
 
 def render_report_html(df: pd.DataFrame) -> str:
-    """Generates the HTML content for the summary report."""
+    """Generates clean HTML content for the summary report without leading spaces."""
     total = len(df)
     optimized = len(df[df["SEO Grade"] == "Pass (Optimized)"])
     missing_h1 = len(df[df["Is Missing H1"] == True])
@@ -195,71 +195,51 @@ def render_report_html(df: pd.DataFrame) -> str:
 
     table_rows = ""
     for _, row in df.iterrows():
-        table_rows += f"""
-        <tr>
-            <td style="padding: 10px; border: 1px solid #ddd;">{row['URL']}</td>
-            <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">{row['H1 Count']}</td>
-            <td style="padding: 10px; border: 1px solid #ddd;">{row['H1 Content']}</td>
-            <td style="padding: 10px; border: 1px solid #ddd;"><b>{row['SEO Grade']}</b></td>
-            <td style="padding: 10px; border: 1px solid #ddd;">{row['Issues']}</td>
-        </tr>
-        """
+        table_rows += f"<tr><td style='padding: 8px; border: 1px solid #ddd;'>{row['URL']}</td><td style='padding: 8px; border: 1px solid #ddd; text-align: center;'>{row['H1 Count']}</td><td style='padding: 8px; border: 1px solid #ddd;'>{row['H1 Content']}</td><td style='padding: 8px; border: 1px solid #ddd;'><b>{row['SEO Grade']}</b></td><td style='padding: 8px; border: 1px solid #ddd;'>{row['Issues']}</td></tr>"
 
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <style>
-            body {{ font-family: Arial, sans-serif; background-color: #ffffff; padding: 20px; }}
-            .card {{ background: #ffffff; padding: 25px; border-radius: 10px; border: 2px solid #e0e0e0; }}
-            .metrics {{ display: flex; justify-content: space-around; background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px; }}
-            .metric-box {{ text-align: center; }}
-            .metric-val {{ font-size: 22px; font-weight: bold; margin: 5px 0 0 0; }}
-            table {{ width: 100%; border-collapse: collapse; margin-top: 15px; }}
-            th {{ background-color: #f1f3f5; padding: 10px; border: 1px solid #ddd; text-align: left; }}
-        </style>
-    </head>
-    <body>
-        <div class="card">
-            <h2 style="color: #1E88E5; margin-top: 0;">📊 SEO H1 Audit Summary Report</h2>
-            <hr style="border: 0.5px solid #eee;">
-            <div class="metrics">
-                <div class="metric-box">
-                    <h4 style="margin:0; color:#555;">Scanned</h4>
-                    <p class="metric-val">{total}</p>
-                </div>
-                <div class="metric-box">
-                    <h4 style="margin:0; color:#4CAF50;">Optimized</h4>
-                    <p class="metric-val" style="color:#4CAF50;">{optimized} ({opt_pct:.1f}%)</p>
-                </div>
-                <div class="metric-box">
-                    <h4 style="margin:0; color:#F44336;">Missing H1</h4>
-                    <p class="metric-val" style="color:#F44336;">{missing_h1}</p>
-                </div>
-                <div class="metric-box">
-                    <h4 style="margin:0; color:#FF9800;">Multiple H1s</h4>
-                    <p class="metric-val" style="color:#FF9800;">{multiple_h1}</p>
-                </div>
-            </div>
-            <h3>Detailed Breakdown</h3>
-            <table>
-                <thead>
-                    <tr>
-                        <th>URL</th>
-                        <th>H1 Count</th>
-                        <th>H1 Content</th>
-                        <th>SEO Grade</th>
-                        <th>Issues</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {table_rows}
-                </tbody>
-            </table>
-        </div>
-    </body>
-    </html>
-    """
+    html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+<style>
+body {{ font-family: Arial, sans-serif; background-color: #ffffff; margin: 0; padding: 10px; }}
+.card {{ background: #ffffff; padding: 20px; border-radius: 8px; border: 1px solid #e0e0e0; }}
+.metrics {{ display: flex; justify-content: space-around; background-color: #f8f9fa; padding: 12px; border-radius: 6px; margin-bottom: 15px; }}
+.metric-box {{ text-align: center; }}
+.metric-val {{ font-size: 20px; font-weight: bold; margin: 4px 0 0 0; }}
+table {{ width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }}
+th {{ background-color: #f1f3f5; padding: 8px; border: 1px solid #ddd; text-align: left; }}
+</style>
+</head>
+<body>
+<div class="card">
+<h3 style="color: #1E88E5; margin-top: 0;">📊 SEO H1 Audit Summary Report</h3>
+<hr style="border: 0.5px solid #eee;">
+<div class="metrics">
+<div class="metric-box"><h5 style="margin:0; color:#555;">Scanned</h5><p class="metric-val">{total}</p></div>
+<div class="metric-box"><h5 style="margin:0; color:#4CAF50;">Optimized</h5><p class="metric-val" style="color:#4CAF50;">{optimized} ({opt_pct:.1f}%)</p></div>
+<div class="metric-box"><h5 style="margin:0; color:#F44336;">Missing H1</h5><p class="metric-val" style="color:#F44336;">{missing_h1}</p></div>
+<div class="metric-box"><h5 style="margin:0; color:#FF9800;">Multiple H1s</h5><p class="metric-val" style="color:#FF9800;">{multiple_h1}</p></div>
+</div>
+<h4 style="margin-bottom: 8px;">Detailed Breakdown</h4>
+<table>
+<thead>
+<tr>
+<th>URL</th>
+<th>H1 Count</th>
+<th>H1 Content</th>
+<th>SEO Grade</th>
+<th>Issues</th>
+</tr>
+</thead>
+<tbody>
+{table_rows}
+</tbody>
+</table>
+</div>
+</body>
+</html>"""
+
+    return html_content
 
 def generate_report_screenshot(html_content: str) -> bytes:
     """Uses Playwright on the server to render HTML and capture a clean PNG screenshot."""
